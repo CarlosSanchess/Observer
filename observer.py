@@ -3,6 +3,10 @@ from bcc import BPF
 from bcc.utils import printb
 import argparse
 import ctypes as ct
+from parser import get_syscall_name,load_sys_table
+
+
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Trace syscalls by PID")
@@ -29,12 +33,24 @@ BPF_RINGBUF_OUTPUT(events, 1);
 
 struct data_t {
     u32 pid;
+    u32 sid;
 };
 
-int hello_world(void *ctx) {
-    bpf_trace_printk("Hello, world!\\n");
+int get_systemcall_id(void *ctx) {
+    u32 *value;
+    u32 key = 0;
+    value = pids.lookup(&key);
+    if (value) {
+        struct data_t data;
+        data.pid = *value;
+
+
+        events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
+    }
     return 0;
 }
+
+
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     u32 *value;
@@ -43,18 +59,24 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     if (value) {
         struct data_t data;
         data.pid = *value;
+       // u64 pid_tgid = bpf_get_current_pid_tgid();
+       // u32 thisPid = pid_tgid >> 32;
+        u32 syscall_id = args->id;  // Assuming `args->id` contains the syscall ID
+        data.sid = syscall_id;
         events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
     }
     return 0;
 }
 
-"""
 
+"""
+file_path = 'sysTable.txt'  
+sys_table = load_sys_table(file_path)
 b = BPF(text=prog)
 #b.attach_kprobe(event=b.get_syscall_fnname("execve"), fn_name="hello_world")
 
 print("Tracing processes in the system... Ctrl-C to end")
-print("%-6s %-6s %-20s %s" % ("PID", "UID", "COMM", "RUNTIME"))
+print("%-6s %-6s %-20s %s" % ("PID", "SID", "COMM", "RUNTIME"))
 
 if pid_filter:
     pid_table = b.get_table("pids")
@@ -62,8 +84,9 @@ if pid_filter:
 
 def print_event(cpu, data, size):
     """Callback function that will output the event data"""
-    data = b["events"].event(data)  # BCC allows this simple map access from user spcae
-    print("%-6s " % (data.pid))
+   
+    data = b["events"].event(data)  
+    print(("%-6s - %-6s - %-6s") % (data.pid, data.sid, get_syscall_name(sys_table, data.sid)))
 
 
 b["events"].open_ring_buffer(print_event)
