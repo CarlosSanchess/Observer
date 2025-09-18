@@ -1,34 +1,43 @@
 #!/usr/bin/python3
 from bcc import BPF
-from bcc.utils import printb
 import argparse
 import ctypes as ct
-from parser import get_syscall_name,load_sys_table
-
+from parser import get_syscall_name,load_sys_table,is_in_table,get_syscall_id
 
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Trace syscalls by PID")
+    parser = argparse.ArgumentParser(description="Provide a PID to trace all its system calls, or specify one to monitor.")
+    
     parser.add_argument(
-        'pids', metavar='PID', type=int, nargs='*', 
+        '-p',"--pid", metavar='PID', type=int, nargs='*', 
         help="One to three PIDs to filter their syscalls. If no PID is provided, all syscalls will be shown.",
     )
+    
+    parser.add_argument(
+        '-s', '--syscall', metavar='SYSCALL', type=str,
+        help="One system call to filter. If no syscall is provided, all will be shown.",
+    )
+    
     args = parser.parse_args()
 
-    if len(args.pids) > 3:
-        print("You can provide up to 3 PIDs only.")
+    if  args.pid and len(args.pid) > 1:
+        print("You can provide up to 1 PIDs only.")
         exit(1)
     
-    return args.pids
+    if args.syscall and len(args.syscall.split()) > 1: 
+        print("You can provide up to 1 system call only.")
+        exit(1)
+    
+    return args  
 
-pid_filter = parse_args()
+pid_filter = parse_args().pid 
+sys_filter = parse_args().syscall  
 
-
-# The eBPF program
 prog = """
 
-BPF_ARRAY(pids, u32, 3); /* PID's received from user input if any*/
+BPF_ARRAY(pids, u32, 1); /* PID's received from user input if any*/
+BPF_ARRAY(syscall, u32, 1);
 BPF_RINGBUF_OUTPUT(events, 2);
 
 struct data_t {
@@ -40,22 +49,28 @@ int get_systemcall(void *ctx) {
     u32 *value;
     u32 key = 0;
     value = pids.lookup(&key);
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 thisPid = pid_tgid >> 32;
+    struct data_t data;
+
     if (value) {
-        struct data_t data;
-        data.pid = *value;
+       if(thisPid == *value){
+            data.sid = *value; // todo get the system call id in kernel space
+            data.pid = *value;
+            events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
+        }
 
-
-        events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
     }
     return 0;
 }
 
-
-
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
-    u32 *value;
     u32 key = 0;
-    value = pids.lookup(&key);
+    u32* ret = syscall.lookup(&key); // we check if there is a single target
+    if(ret && *ret == key){
+        return 0;
+    }
+    u32* value = pids.lookup(&key);
 
     struct data_t data;
 
@@ -65,7 +80,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     u32 flag = -1;
     if (value){ 
         if(thisPid == *value){
-            u32 syscall_id = args->id;  // Assuming `args->id` contains the syscall ID
+            u32 syscall_id = args->id;  
             data.sid = syscall_id;
             data.pid = *value;
             events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
@@ -88,7 +103,6 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
 file_path = 'sysTable.txt'  
 sys_table = load_sys_table(file_path)
 b = BPF(text=prog)
-#b.attach_kprobe(event=b.get_syscall_fnname("execve"), fn_name="hello_world")
 
 print("Tracing processes in the system... Ctrl-C to end")
 print("%-6s %-6s %-20s" % ("PID", "SID", "COMM"))
@@ -100,11 +114,20 @@ if pid_filter:
 else:
     pid_table[0] = ct.c_uint32(-1)
 
+if sys_filter and is_in_table(sys_table, sys_filter):
+    pid_table = b.get_table("syscall")     # there is a single syscall targeted, so we need to fill a map, so that the static tracepoint that gathers all sys calls doesnt exec normally
+    pid_table[0] = ct.c_uint32(0)
+    b.attach_kprobe(event=b.get_syscall_fnname(sys_filter), fn_name="get_systemcall") #attach dynamic kernel hook point
+
+
 def print_event(cpu, data, size):
     """Callback function that will output the event data"""
    
     data = b["events"].event(data)  
-    print(("%-6s - %-6s - %-6s") % (data.pid, data.sid, get_syscall_name(sys_table, data.sid)))
+    if data.sid == pid_filter[0]:
+        print(("%-6s - %-6s - %-6s") % (data.pid, get_syscall_id(sys_table,sys_filter), sys_filter))
+    else:
+        print(("%-6s - %-6s - %-6s") % (data.pid, data.sid, get_syscall_name(sys_table, data.sid)))
 
 
 b["events"].open_ring_buffer(print_event)
