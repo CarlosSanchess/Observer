@@ -29,14 +29,14 @@ pid_filter = parse_args()
 prog = """
 
 BPF_ARRAY(pids, u32, 3); /* PID's received from user input if any*/
-BPF_RINGBUF_OUTPUT(events, 1);
+BPF_RINGBUF_OUTPUT(events, 2);
 
 struct data_t {
     u32 pid;
     u32 sid;
 };
 
-int get_systemcall_id(void *ctx) {
+int get_systemcall(void *ctx) {
     u32 *value;
     u32 key = 0;
     value = pids.lookup(&key);
@@ -56,15 +56,30 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     u32 *value;
     u32 key = 0;
     value = pids.lookup(&key);
-    if (value) {
-        struct data_t data;
-        data.pid = *value;
-       // u64 pid_tgid = bpf_get_current_pid_tgid();
-       // u32 thisPid = pid_tgid >> 32;
-        u32 syscall_id = args->id;  // Assuming `args->id` contains the syscall ID
-        data.sid = syscall_id;
-        events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
+
+    struct data_t data;
+
+    u64 pid_tgid = bpf_get_current_pid_tgid();
+    u32 thisPid = pid_tgid >> 32;
+
+    u32 flag = -1;
+    if (value){ 
+        if(thisPid == *value){
+            u32 syscall_id = args->id;  // Assuming `args->id` contains the syscall ID
+            data.sid = syscall_id;
+            data.pid = *value;
+            events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
+        }
+        if(*value == flag){
+            u32 syscall_id = args->id; 
+            data.sid = syscall_id;
+            data.pid = thisPid;
+            events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
+        }
     }
+    
+
+    
     return 0;
 }
 
@@ -76,11 +91,14 @@ b = BPF(text=prog)
 #b.attach_kprobe(event=b.get_syscall_fnname("execve"), fn_name="hello_world")
 
 print("Tracing processes in the system... Ctrl-C to end")
-print("%-6s %-6s %-20s %s" % ("PID", "SID", "COMM", "RUNTIME"))
+print("%-6s %-6s %-20s" % ("PID", "SID", "COMM"))
+
+pid_table = b.get_table("pids")
 
 if pid_filter:
-    pid_table = b.get_table("pids")
     pid_table[0] = ct.c_uint32(pid_filter[0])
+else:
+    pid_table[0] = ct.c_uint32(-1)
 
 def print_event(cpu, data, size):
     """Callback function that will output the event data"""
