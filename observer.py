@@ -2,6 +2,7 @@
 from bcc import BPF
 from bcc.utils import printb
 import argparse
+import ctypes as ct
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Trace syscalls by PID")
@@ -24,9 +25,10 @@ pid_filter = parse_args()
 prog = """
 
 BPF_ARRAY(pids, u32, 3); /* PID's received from user input if any*/
+BPF_RINGBUF_OUTPUT(events, 1);
 
 struct data_t {
-    u64 pid;
+    u32 pid;
 };
 
 int hello_world(void *ctx) {
@@ -34,19 +36,39 @@ int hello_world(void *ctx) {
     return 0;
 }
 
+TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
+    u32 *value;
+    u32 key = 0;
+    value = pids.lookup(&key);
+    if (value) {
+        struct data_t data;
+        data.pid = *value;
+        events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
+    }
+    return 0;
+}
+
 """
 
 b = BPF(text=prog)
-b.attach_kprobe(event=b.get_syscall_fnname("execve"), fn_name="hello_world")
+#b.attach_kprobe(event=b.get_syscall_fnname("execve"), fn_name="hello_world")
 
 print("Tracing processes in the system... Ctrl-C to end")
 print("%-6s %-6s %-20s %s" % ("PID", "UID", "COMM", "RUNTIME"))
 
-while True:
+if pid_filter:
+    pid_table = b.get_table("pids")
+    pid_table[0] = ct.c_uint32(pid_filter[0])
+
+def print_event(cpu, data, size):
+    """Callback function that will output the event data"""
+    data = b["events"].event(data)  # BCC allows this simple map access from user spcae
+    print("%-6s " % (data.pid))
+
+
+b["events"].open_ring_buffer(print_event)
+while 1:
     try:
-        (task, pid, cpu, flags, ts, msg) = b.trace_fields()
-    except ValueError:
-        continue
+        b.ring_buffer_poll(30)
     except KeyboardInterrupt:
         exit()
-    printb(b"%-18.9f %-16s %-6d %s" % (ts, task, pid, msg))
