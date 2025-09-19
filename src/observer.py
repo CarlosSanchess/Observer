@@ -100,7 +100,7 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
 
 
 """
-file_path = 'sysTable.txt'  
+file_path = '../data/sysTable.txt'  
 sys_table = load_sys_table(file_path)
 b = BPF(text=prog)
 
@@ -114,7 +114,7 @@ if pid_filter:
 else:
     pid_table[0] = ct.c_uint32(-1)
 
-if sys_filter and is_in_table(sys_table, sys_filter):
+if sys_filter and is_in_table_name(sys_table, sys_filter):
     pid_table = b.get_table("syscall")     # there is a single syscall targeted, so we need to fill a map, so that the static tracepoint that gathers all sys calls doesnt exec normally
     pid_table[0] = ct.c_uint32(0)
     b.attach_kprobe(event=b.get_syscall_fnname(sys_filter), fn_name="get_systemcall") #attach dynamic kernel hook point
