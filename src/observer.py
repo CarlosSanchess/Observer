@@ -2,7 +2,7 @@
 from bcc import BPF
 import argparse
 import ctypes as ct
-from parser import get_syscall_name,load_sys_table,is_in_table,get_syscall_id
+from parser import get_syscall_name,load_sys_table,is_in_table_name,get_syscall_id
 
 
 
@@ -52,6 +52,8 @@ int get_systemcall(void *ctx) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 thisPid = pid_tgid >> 32;
     struct data_t data;
+    u32 flag = -1;
+
 
     if (value) {
        if(thisPid == *value){
@@ -59,16 +61,25 @@ int get_systemcall(void *ctx) {
             data.pid = *value;
             events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
         }
-
+       if(*value == flag){
+            data.sid = thisPid;
+            data.pid = thisPid;
+            events.ringbuf_output(&data, sizeof(data), BPF_RB_FORCE_WAKEUP);
+       }
     }
     return 0;
 }
 
 TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     u32 key = 0;
+    u32 flag = -1;
+
     u32* ret = syscall.lookup(&key); // we check if there is a single target
-    if(ret && *ret == key){
-        return 0;
+    
+    if(ret){
+        if(*ret == flag){
+         return 0;
+        }
     }
     u32* value = pids.lookup(&key);
 
@@ -77,7 +88,6 @@ TRACEPOINT_PROBE(raw_syscalls, sys_enter) {
     u64 pid_tgid = bpf_get_current_pid_tgid();
     u32 thisPid = pid_tgid >> 32;
 
-    u32 flag = -1;
     if (value){ 
         if(thisPid == *value){
             u32 syscall_id = args->id;  
@@ -105,7 +115,7 @@ sys_table = load_sys_table(file_path)
 b = BPF(text=prog)
 
 print("Tracing processes in the system... Ctrl-C to end")
-print("%-6s %-6s %-20s" % ("PID", "SID", "COMM"))
+print("%-8s %-8s %-20s" % ("PID", "SID", "COMM"))
 
 pid_table = b.get_table("pids")
 
@@ -115,8 +125,9 @@ else:
     pid_table[0] = ct.c_uint32(-1)
 
 if sys_filter and is_in_table_name(sys_table, sys_filter):
-    pid_table = b.get_table("syscall")     # there is a single syscall targeted, so we need to fill a map, so that the static tracepoint that gathers all sys calls doesnt exec normally
-    pid_table[0] = ct.c_uint32(0)
+    print("asdsa")
+    syscall_table = b.get_table("syscall")     # there is a single syscall targeted, so we need to fill a map, so that the static tracepoint that gathers all sys calls doesnt exec normally
+    syscall_table[0] = ct.c_uint32(-1)
     b.attach_kprobe(event=b.get_syscall_fnname(sys_filter), fn_name="get_systemcall") #attach dynamic kernel hook point
 
 
@@ -124,10 +135,12 @@ def print_event(cpu, data, size):
     """Callback function that will output the event data"""
    
     data = b["events"].event(data)  
-    if data.sid == pid_filter[0]:
+ 
+    if sys_filter and len(sys_filter) > 0:
         print(("%-6s - %-6s - %-6s") % (data.pid, get_syscall_id(sys_table,sys_filter), sys_filter))
     else:
         print(("%-6s - %-6s - %-6s") % (data.pid, data.sid, get_syscall_name(sys_table, data.sid)))
+
 
 
 b["events"].open_ring_buffer(print_event)
