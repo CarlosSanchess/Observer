@@ -17,7 +17,7 @@ For translating system call IDs to their designations, we use a syscall table fo
 - [x] Trace all system calls made by all processes.
 - [x] Trace all system calls made by a specific process.
 - [x] Trace a specific system call made by a specific process.
-- [ ] Trace a specific system call made by all processes.
+- [X] Trace a specific system call made by all processes.
 - [ ] GUI interface for visualization.
 
 ## eBPF (Extended Berkeley Packet Filter)
